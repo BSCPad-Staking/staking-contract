@@ -7,10 +7,6 @@ import "@pancakeswap/pancake-swap-lib/contracts/access/Ownable.sol";
 
 // import "@nomiclabs/buidler/console.sol";
 
-interface IMigratorPad {
-    function migrate(IBEP20 token) external returns (IBEP20);
-}
-
 contract PadStaking is Ownable {
     using SafeMath for uint256;
     using SafeBEP20 for IBEP20;
@@ -33,18 +29,14 @@ contract PadStaking is Ownable {
 
     // The BSCPAD TOKEN!
     IBEP20 public bscpad;
-    // The SYRUP TOKEN!
-    IBEP20 public poolBar;
     // Dev address.
     address public devaddr;
-    // Minter address.
-    address payable public minter;
+    // Rinter address.
+    address public rewarder;
     // BSCPAD tokens created per block.
     uint256 public bscpadPerBlock;
     // Bonus muliplier for early bscpad makers.
     uint256 public BONUS_MULTIPLIER = 1;
-    // The migrator contract. It has a lot of power. Can only be set through governance (owner).
-    IMigratorPad public migrator;
 
     // Total Reward
     uint256 public totalReward;
@@ -58,27 +50,22 @@ contract PadStaking is Ownable {
     // The block number when BSCPAD mining starts.
     uint256 public startBlock;
 
-    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
-    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event EmergencyWithdraw(
-        address indexed user,
-        uint256 indexed pid,
-        uint256 amount
-    );
+    event Deposit(address indexed user, uint256 amount);
+    event Withdraw(address indexed user, uint256 amount);
+    event EmergencyWithdraw(address indexed user, uint256 amount);
 
     constructor(
         IBEP20 _bscpad,
-        IBEP20 _poolBar,
         address _devaddr,
+        address _rewarderaddr,
         uint256 _bscpadPerBlock,
         uint256 _startBlock
     ) public {
         bscpad = _bscpad;
-        poolBar = _poolBar;
         devaddr = _devaddr;
         bscpadPerBlock = _bscpadPerBlock;
         startBlock = _startBlock;
-        minter = msg.sender;
+        rewarder = _rewarderaddr;
 
         // staking pool
         poolInfo.push(
@@ -97,53 +84,6 @@ contract PadStaking is Ownable {
         BONUS_MULTIPLIER = multiplierNumber;
     }
 
-    function poolLength() external view returns (uint256) {
-        return poolInfo.length;
-    }
-
-    // Add a new lp to the pool. Can only be called by the owner.
-    // XXX DO NOT add the same LP token more than once. Rewards will be messed up if you do.
-    function add(
-        uint256 _allocPoint,
-        IBEP20 _lpToken,
-        bool _withUpdate
-    ) public onlyOwner {
-        if (_withUpdate) {
-            massUpdatePools();
-        }
-        uint256 lastRewardBlock =
-            block.number > startBlock ? block.number : startBlock;
-        totalAllocPoint = totalAllocPoint.add(_allocPoint);
-        poolInfo.push(
-            PoolInfo({
-                lpToken: _lpToken,
-                allocPoint: _allocPoint,
-                lastRewardBlock: lastRewardBlock,
-                accBSCPADPerShare: 0
-            })
-        );
-        updateStakingPool();
-    }
-
-    // Update the given pool's BSCPAD allocation point. Can only be called by the owner.
-    function set(
-        uint256 _pid,
-        uint256 _allocPoint,
-        bool _withUpdate
-    ) public onlyOwner {
-        if (_withUpdate) {
-            massUpdatePools();
-        }
-        uint256 prevAllocPoint = poolInfo[_pid].allocPoint;
-        poolInfo[_pid].allocPoint = _allocPoint;
-        if (prevAllocPoint != _allocPoint) {
-            totalAllocPoint = totalAllocPoint.sub(prevAllocPoint).add(
-                _allocPoint
-            );
-            updateStakingPool();
-        }
-    }
-
     function updateStakingPool() internal {
         uint256 length = poolInfo.length;
         uint256 points = 0;
@@ -159,23 +99,6 @@ contract PadStaking is Ownable {
         }
     }
 
-    // Set the migrator contract. Can only be called by the owner.
-    function setMigrator(IMigratorPad _migrator) public onlyOwner {
-        migrator = _migrator;
-    }
-
-    // Migrate lp token to another lp contract. Can be called by anyone. We trust that migrator contract is good.
-    function migrate(uint256 _pid) public {
-        require(address(migrator) != address(0), "migrate: no migrator");
-        PoolInfo storage pool = poolInfo[_pid];
-        IBEP20 lpToken = pool.lpToken;
-        uint256 bal = lpToken.balanceOf(address(this));
-        lpToken.safeApprove(address(migrator), bal);
-        IBEP20 newLpToken = migrator.migrate(lpToken);
-        require(bal == newLpToken.balanceOf(address(this)), "migrate: bad");
-        pool.lpToken = newLpToken;
-    }
-
     // Return reward multiplier over the given _from to _to block.
     function getMultiplier(uint256 _from, uint256 _to)
         public
@@ -186,13 +109,9 @@ contract PadStaking is Ownable {
     }
 
     // View function to see pending BSCPADs on frontend.
-    function pendingBscpad(uint256 _pid, address _user)
-        external
-        view
-        returns (uint256)
-    {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][_user];
+    function pendingBscpad(address _user) external view returns (uint256) {
+        PoolInfo storage pool = poolInfo[0];
+        UserInfo storage user = userInfo[0][_user];
         uint256 accBSCPADPerShare = pool.accBSCPADPerShare;
         uint256 lpSupply = pool.lpToken.balanceOf(address(this));
         if (block.number > pool.lastRewardBlock && lpSupply != 0) {
@@ -210,17 +129,9 @@ contract PadStaking is Ownable {
             user.amount.mul(accBSCPADPerShare).div(1e12).sub(user.rewardDebt);
     }
 
-    // Update reward variables for all pools. Be careful of gas spending!
-    function massUpdatePools() public {
-        uint256 length = poolInfo.length;
-        for (uint256 pid = 0; pid < length; ++pid) {
-            updatePool(pid);
-        }
-    }
-
     // Update reward variables of the given pool to be up-to-date.
-    function updatePool(uint256 _pid) public {
-        PoolInfo storage pool = poolInfo[_pid];
+    function updatePool() public {
+        PoolInfo storage pool = poolInfo[0];
         if (block.number <= pool.lastRewardBlock) {
             return;
         }
@@ -246,7 +157,7 @@ contract PadStaking is Ownable {
     function enterStaking(uint256 _amount) public {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[0][msg.sender];
-        updatePool(0);
+        updatePool();
         if (user.amount > 0) {
             uint256 pending =
                 user.amount.mul(pool.accBSCPADPerShare).div(1e12).sub(
@@ -266,7 +177,7 @@ contract PadStaking is Ownable {
         }
         user.rewardDebt = user.amount.mul(pool.accBSCPADPerShare).div(1e12);
 
-        emit Deposit(msg.sender, 0, _amount);
+        emit Deposit(msg.sender, _amount);
     }
 
     // Withdraw BSCPAD tokens from STAKING.
@@ -274,7 +185,7 @@ contract PadStaking is Ownable {
         PoolInfo storage pool = poolInfo[0];
         UserInfo storage user = userInfo[0][msg.sender];
         require(user.amount >= _amount, "withdraw: not good");
-        updatePool(0);
+        updatePool();
         uint256 pending =
             user.amount.mul(pool.accBSCPADPerShare).div(1e12).sub(
                 user.rewardDebt
@@ -291,15 +202,15 @@ contract PadStaking is Ownable {
 
         // poolBar.burn(msg.sender, _amount);
         addUserReward(msg.sender, _amount);
-        emit Withdraw(msg.sender, 0, _amount);
+        emit Withdraw(msg.sender, _amount);
     }
 
     // Withdraw without caring about rewards. EMERGENCY ONLY.
-    function emergencyWithdraw(uint256 _pid) public {
-        PoolInfo storage pool = poolInfo[_pid];
-        UserInfo storage user = userInfo[_pid][msg.sender];
+    function emergencyWithdraw() public {
+        PoolInfo storage pool = poolInfo[0];
+        UserInfo storage user = userInfo[0][msg.sender];
         pool.lpToken.safeTransfer(address(msg.sender), user.amount);
-        emit EmergencyWithdraw(msg.sender, _pid, user.amount);
+        emit EmergencyWithdraw(msg.sender, user.amount);
         user.amount = 0;
         user.rewardDebt = 0;
     }

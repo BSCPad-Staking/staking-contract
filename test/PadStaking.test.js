@@ -1,17 +1,21 @@
 const { expectRevert, time } = require('@openzeppelin/test-helpers');
 const PadStaking = artifacts.require('PadStaking');
 const MockBEP20 = artifacts.require('libs/MockBEP20');
+const BSCPAD = artifacts.require('BSCPAD');
 
 contract('PadStaking', ([alice, bob, carol, dev, minter]) => {
   beforeEach(async () => {
-    this.pad = await MockBEP20.new('BSCPad.com', 'BSCPAD', '100000', {
-      from: minter,
-    });
+    // this.pad = await MockBEP20.new('BSCPad.com', 'BSCPAD', '100000', {
+    //   from: minter,
+    // });
+
+    this.pad = await BSCPAD.new({ from: minter });
+    this.pad.initialize(100000, { from: minter });
 
     this.chef = await PadStaking.new(
       this.pad.address,
-      this.pad.address,
       dev,
+      minter,
       '1000',
       '100',
       { from: minter }
